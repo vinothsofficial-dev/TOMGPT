@@ -1,0 +1,113 @@
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from Bio import Entrez, SeqIO
+import time
+
+app = FastAPI()
+
+# ==============================
+# Enable CORS (IMPORTANT for frontend)
+# ==============================
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# ==============================
+# NCBI Setup
+# ==============================
+Entrez.email = "your_email@example.com"   # 🔴 REPLACE THIS
+
+# ==============================
+# Home Route
+# ==============================
+@app.get("/")
+def home():
+    return {"message": "TomGPT API is running 🚀"}
+
+# ==============================
+# Trait-based Search (LIVE NCBI)
+# ==============================
+@app.get("/search-live/")
+def search_trait(trait: str):
+
+    search_term = f"Solanum lycopersicum[Organism] AND {trait}"
+
+    handle = Entrez.esearch(db="gene", term=search_term, retmax=15)
+    record = Entrez.read(handle)
+
+    results = []
+
+    for gene_id in record["IdList"]:
+        try:
+            # ==============================
+            # Fetch Gene Details
+            # ==============================
+            handle = Entrez.efetch(db="gene", id=gene_id, retmode="xml")
+            gene_data = Entrez.read(handle)[0]
+
+            gene_name = gene_data['Entrezgene_gene']['Gene-ref']['Gene-ref_locus']
+            description = gene_data.get('Entrezgene_summary', "NA")
+
+            chromosome = "NA"
+            try:
+                chromosome = gene_data['Entrezgene_source']['BioSource']\
+                    ['BioSource_subtype'][0]['SubSource_name']
+            except:
+                pass
+
+            # ==============================
+            # Fetch Sequence
+            # ==============================
+            seq_handle = Entrez.esearch(
+                db="nucleotide",
+                term=f"{gene_name}[Gene] AND Solanum lycopersicum",
+                retmax=1
+            )
+            seq_record = Entrez.read(seq_handle)
+
+            sequence = "NA"
+            if seq_record["IdList"]:
+                sid = seq_record["IdList"][0]
+                fetch_seq = Entrez.efetch(db="nucleotide", id=sid, rettype="fasta")
+                sequence = str(SeqIO.read(fetch_seq, "fasta").seq)
+
+            # ==============================
+            # Primer Design (basic)
+            # ==============================
+            forward = sequence[:20] if sequence != "NA" else "NA"
+            reverse = sequence[-20:][::-1] if sequence != "NA" else "NA"
+
+            # ==============================
+            # CRISPR Targets (NGG PAM)
+            # ==============================
+            crispr_targets = []
+            if sequence != "NA":
+                for i in range(len(sequence) - 23):
+                    segment = sequence[i:i+23]
+                    if segment[-3:] == "GG":
+                        crispr_targets.append(segment[:20])
+                crispr_targets = crispr_targets[:3]
+
+            # ==============================
+            # Final Output
+            # ==============================
+            results.append({
+                "gene_name": gene_name,
+                "chromosome": chromosome,
+                "description": description,
+                "sequence_preview": sequence[:200],
+                "forward_primer": forward,
+                "reverse_primer": reverse,
+                "crispr_targets": crispr_targets
+            })
+
+            time.sleep(0.4)  # prevent NCBI blocking
+
+        except:
+            continue
+
+    return results
